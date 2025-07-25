@@ -7,12 +7,13 @@ from torchvision import transforms
 
 
 class FaceEmbedderFacenet:
-    def __init__(self, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, args=None):
         """
         使用 facenet-pytorch 实现人脸特征提取
         :param device: "cuda" or "cpu"
         """
-        self.device = device
+        self.device = args.device
+        self.out_dim = 512
         self.detector = MTCNN(keep_all=True, device=self.device)
         self.embedder = InceptionResnetV1(pretrained='vggface2').eval().to(self.device)
         self.transform = transforms.Compose([

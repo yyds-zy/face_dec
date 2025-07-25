@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from numpy import random
 import time
+from tqdm import tqdm
 
 import argparse
 import os
@@ -21,10 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='test/video_test.mp4', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--img-size', type=int, default=1920, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.09, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.7, help='IOU threshold for NMS')
-    parser.add_argument('--device', default='cpu', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default='cuda', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='display results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
@@ -40,6 +38,11 @@ def parse_args():
     parser.add_argument('--hide-labels-name', default=False, action='store_true', help='hide labels')
     parser.add_argument('--view_img', action='store_true', help='view_img')
 
+    # detector
+    parser.add_argument('--img_size', type=int, default=1920, help='inference size (pixels)')
+    parser.add_argument('--conf_thres', type=float, default=0.09, help='object confidence threshold')
+    parser.add_argument('--iou_thres', type=float, default=0.7, help='IOU threshold for NMS')
+
     # tracking args
     parser.add_argument("--track_high_thresh", type=float, default=0.3, help="tracking confidence threshold")
     parser.add_argument("--track_low_thresh", default=0.05, type=float, help="lowest detection threshold")
@@ -49,26 +52,29 @@ def parse_args():
     parser.add_argument("--aspect_ratio_thresh", type=float, default=1.6,
                         help="threshold for filtering out boxes of which aspect ratio are above the given value.")
     parser.add_argument('--min_box_area', type=float, default=40000, help='filter out tiny boxes')
-
     parser.add_argument("--fuse-score", dest="mot20", default=False, action="store_true",
                         help="fuse score and iou for association")
-
+    parser.add_argument("--similarity_thresh", default=0.4, type=float, help="renew embedding thresh")
     # CMC
     parser.add_argument("--cmc-method", default="sparseOptFlow", type=str, help="cmc method: sparseOptFlow | files (Vidstab GMC) | orb | ecc")
 
     # ReID
     parser.add_argument("--with-reid", dest="with_reid", default=False, action="store_true", help="with ReID module.")
-    parser.add_argument("--ReID-emb-name", dest="ReID_emb_name", default="vit_8_112",
+    
+    parser.add_argument("--ReID-emb-name", dest="ReID_emb_name", default="FaceEmbedderDirect",
                         type=str, help="reid model name")
-    parser.add_argument("--fast-reid-config", dest="fast_reid_config", default=r"model/timm_face/face_ReID_vit_8_112.yaml",
+    parser.add_argument("--pretrained-model-dir", dest="pretrained_model_dir", default="weights/ReID/face_ReID_vit",
                         type=str, help="reid config file path")
-    parser.add_argument("--fast-reid-weights", dest="fast_reid_weights", default=r"weights/ReID/mot17_sbs_S50.pth",
+    parser.add_argument("--fast-reid-weights", dest="fast_reid_weights", default="weights/ReID/face_ReID_vit/model.safetensors",
                         type=str, help="reid config file path")
+    
+    parser.add_argument("--ReID_input_size", default=640, type=int, help="only patch-input ReID model need")
     parser.add_argument('--proximity_thresh', type=float, default=0.5,
                         help='threshold for rejecting low overlap reid matches')
     parser.add_argument('--appearance_thresh', type=float, default=0.25,
                         help='threshold for rejecting low appearance similarity reid matches')
     
+    # pose estimation
     parser.add_argument('--with_pose', default=False, action='store_true', help='hide labels')
     
 
@@ -80,9 +86,10 @@ class VideoWrapper:
     def __init__(self, args):
         self.args = args
 
-        self.detector = build_detector()
+        self.detector = build_detector(args)
         self.tracker = build_tracker(args, frame_rate=30)
-        # self.pose_generate = build_pose_generator()
+        if args.with_pose:
+            self.pose_generate = build_pose_generator(args)
         # self.mesh_generate = build_mesh_generater()
 
         # 用于计时，单位为秒
@@ -192,7 +199,6 @@ class VideoWrapper:
         online_tlwhs = []
         online_ids = []
         online_scores = []
-
         
         if estimate_pose:
             for i, k in enumerate(reversed(results_pose[0].keypoints.data)):
@@ -226,7 +232,7 @@ class VideoWrapper:
                 self.plot_one_box_bottom(tlbr, frame, color=self.colors[int(tid) % len(self.colors)], line_thickness=2)
                 cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors[int(tid) % len(self.colors)], 1)
 
-        print(f'results:{results_return} \n')
+        # print(f'results:{results_return} \n')
         
         # 保存视频帧
         if not self.args.nosave and self.video_writer is not None:
@@ -239,7 +245,7 @@ class VideoWrapper:
     def _init_video_writer(self, frame):
         """初始化视频写入器"""
         # 设置保存目录
-        save_dir = os.path.join(self.args.project, self.args.name)
+        save_dir = os.path.join(self.args.project, self.args.name, self.args.ReID_emb_name)
         os.makedirs(save_dir, exist_ok=True)
         
         # 生成保存文件名
@@ -286,31 +292,58 @@ if __name__ == "__main__":
     print(f"视频FPS: {cap.get(cv2.CAP_PROP_FPS):.2f}")
 
     frame_count = 1
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    start_time = time.time()  # 记录开始时间
     try:
+        with tqdm(total=total_frames, desc="Processing video") as pbar:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    print("视频读取完毕")
+                    break
 
-        while cap.isOpened():
-            # if frame_count == 180:
-            #     print('1')
-            ret, frame = cap.read()
-            if not ret:
-                print("视频读取完毕")
-                break
+                frame_with_boxes, tracking_results, current_inter_res = wrapper.process_frame(frame, frame_count, estimate_pose=args.with_pose)
 
-            frame_with_boxes, tracking_results, current_inter_res = wrapper.process_frame(frame, frame_count, estimate_pose=args.with_pose)
-            if args.view_img:
-                # cv2.namedWindow("Tracking Result", cv2.WINDOW_NORMAL)
-                # cv2.resizeWindow("Tracking Result", 960, 540)
-                cv2.imshow("Tracking Result", frame_with_boxes)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            frame_count += 1
+                # if args.view_img:
+                #     # cv2.namedWindow("Tracking Result", cv2.WINDOW_NORMAL)
+                #     # cv2.resizeWindow("Tracking Result", 960, 540)
+                #     cv2.imshow("Tracking Result", frame_with_boxes)
+                # if cv2.waitKey(1) & 0xFF == ord('q'):
+                #     break
+
+                # 进度条更新
+                pbar.update(1)
+                frame_count += 1
 
     finally:
-        # 确保资源释放
+        end_time = time.time()  # 记录结束时间
+        elapsed = end_time - start_time
+        print(f"\n视频处理完成，总耗时：{elapsed:.2f} 秒")
+        
         wrapper.release_video_writer()
         cap.release()
-        cv2.destroyAllWindows()
+    #     cv2.destroyAllWindows()
+
+    # frame_count = 1
+    # try:
+
+    #     while cap.isOpened():
+    #         # if frame_count == 180:
+    #         #     print('1')
+    #         ret, frame = cap.read()
+    #         if not ret:
+    #             print("视频读取完毕")
+    #             break
+
+    #         frame_with_boxes, tracking_results, current_inter_res = wrapper.process_frame(frame, frame_count, estimate_pose=args.with_pose)
+
+    #         frame_count += 1
+
+    # finally:
+    #     # 确保资源释放
+    #     wrapper.release_video_writer()
+    #     cap.release()
+    # #     cv2.destroyAllWindows()
 
     
-
-

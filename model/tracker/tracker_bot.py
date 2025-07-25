@@ -23,7 +23,7 @@ class STrack(BaseTrack):
     def __init__(self, tlwh, score, feat=None, feat_history=50):
 
         # wait activate
-        self._tlwh = np.asarray(tlwh, dtype=np.float)
+        self._tlwh = np.asarray(tlwh, dtype=float)
         self.kalman_filter = None
         self.mean, self.covariance = None, None
         self.is_activated = False
@@ -229,7 +229,7 @@ class BoTSORT(object):
         self.appearance_thresh = args.appearance_thresh
 
         if args.with_reid:
-            self.encoder = FastReIDInterface(args.fast_reid_config, args.fast_reid_weights, args.device, model_name=args.ReID_emb_name)
+            self.encoder = FastReIDInterface(args, model_name=args.ReID_emb_name)
 
         self.gmc = GMC(method=args.cmc_method, verbose=[args.name, args.ablation])
 
@@ -248,16 +248,7 @@ class BoTSORT(object):
         for key, value in kwargs.items():
             self.inter_container[frame_count][key] = value
 
-    def update(self, output_results, img):
-        if self.frame_id == 887:
-            print(1)
-        
-        self.frame_id += 1
-        activated_starcks = []
-        refind_stracks = []
-        lost_stracks = []
-        removed_stracks = []
-
+    def process_results(self, output_results):
         if len(output_results):
             if output_results.shape[1] == 5:
                 scores = output_results[:, 4]
@@ -304,25 +295,30 @@ class BoTSORT(object):
             dets = []
             scores_keep = []
             classes_keep = []
+        return bboxes, scores, classes, dets, scores_keep, classes_keep
+
+
+    def update(self, output_results, img):
+        if self.frame_id == 887:
+            print(1)
+        
+        self.frame_id += 1
+        activated_starcks = []
+        refind_stracks = []
+        lost_stracks = []
+        removed_stracks = []
+
+
 
         '''Extract embeddings '''
         if self.args.with_reid:
-            features_keep = self.encoder.inference(img, dets)
-            # if __name__ == '__main__':
-            #     from PIL import Image
-            #     import numpy as np
 
-            #     # 创建一个随机图像（你也可以用 Image.open("your_face.jpg")）
-            #     img = Image.fromarray(np.uint8(np.random.rand(112, 112, 3) * 255))
-
-            #     embedder = FaceEmbedder(
-            #         model_name="local-dir:weights/ReID/face_ReID_vit",  # 结构必须与训练时一致
-            #         ckpt_path="weights/ReID/face_ReID_vit/model.safetensors"
-            #     )
-
-            #     feat = embedder.extract(img)
-            #     print("Embedding shape:", feat.shape)
-            #     print("Embedding (first 5 dims):", feat[:5])
+            if self.encoder.reid_input == 'ori_image':
+                features_keep, det_results = self.encoder.inference(img)
+                bboxes, scores, classes, dets, scores_keep, classes_keep = self.process_results(det_results)
+            else:
+                bboxes, scores, classes, dets, scores_keep, classes_keep = self.process_results(output_results)
+                features_keep = self.encoder.inference(img, detections=dets)
 
         if len(dets) > 0:
             '''Detections'''
@@ -421,9 +417,17 @@ class BoTSORT(object):
             #     '''Method_2: re_ID特征不用'''
             #     emb_dists[:, mask_det==False] = 1.0
 
+            # ########## 7_14: 如果一个detection和历史目标匹配上了，但是embedding差距较大，匹配它但不更新特征
+            if emb_dists.shape[1] != 0:
+                mask_det_cur_feature =  np.ones(emb_dists.shape[1], dtype=bool)
+                for i_det in range(emb_dists.shape[1]):
+                    # 当在 检测置信度低 的时候，不更新外观特征
+                    if emb_dists.size and emb_dists[:, i_det].min() > self.args.similarity_thresh:
+                        mask_det_cur_feature[i_det]=False
+
             # ########## 
-            dists = np.minimum(ious_dists, emb_dists)
-            # dists = emb_dists
+            # dists = np.minimum(ious_dists, emb_dists)
+            dists = emb_dists
 
             # # Popular ReID method (JDE / FairMOT)
             # raw_emb_dists = matching.embedding_distance(strack_pool, detections)
@@ -444,25 +448,29 @@ class BoTSORT(object):
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.args.match_thresh)
 
         # ************** 6_20：额外的外观更新约束
-        # for itracked, idet in matches:
-        #     track = strack_pool[itracked]
-        #     det = detections[idet]
-        #     if track.state == TrackState.Tracked:
-        #         track.update(detections[idet], self.frame_id, update_reid=mask_det_cur_feature[idet])
-        #         activated_starcks.append(track)
-        #     else:
-        #         track.re_activate(det, self.frame_id, new_id=False, update_reid=mask_det_cur_feature[idet])
-        #         refind_stracks.append(track)
-
         for itracked, idet in matches:
             track = strack_pool[itracked]
             det = detections[idet]
             if track.state == TrackState.Tracked:
-                track.update(detections[idet], self.frame_id)
+                track.update(detections[idet], self.frame_id, update_reid=mask_det_cur_feature[idet])
                 activated_starcks.append(track)
             else:
-                track.re_activate(det, self.frame_id, new_id=False)
+                track.re_activate(det, self.frame_id, new_id=False, update_reid=mask_det_cur_feature[idet])
                 refind_stracks.append(track)
+        
+        # ********************************************************
+
+        # ************** 原来内容
+        # for itracked, idet in matches:
+        #     track = strack_pool[itracked]
+        #     det = detections[idet]
+        #     if track.state == TrackState.Tracked:
+        #         track.update(detections[idet], self.frame_id)
+        #         activated_starcks.append(track)
+        #     else:
+        #         track.re_activate(det, self.frame_id, new_id=False)
+        #         refind_stracks.append(track)
+
                 
         # *** 从原先的tracked_stracks 和 self.lost_stracks 得到 activated_tracks 和 refined_stracks *** unconfirmed为not activated 的只作了光流的视角变化 ***
         ''' Step 3: Second association, with low score detection boxes'''

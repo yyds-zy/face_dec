@@ -4,12 +4,13 @@ from PIL import Image
 from typing import List, Tuple
 
 class FaceEmbedderFR:
-    def __init__(self, model: str = "small", num_jitters: int = 1):
+    def __init__(self, model: str = "small", num_jitters: int = 1, args=None):
         """
         :param model: 人脸对齐模型，"small" 或 "large"
         :param num_jitters: 抖动次数，越大越精确但越慢
         """
         self.model = model
+        self.out_dim = 512
         self.num_jitters = num_jitters
 
     def preprocess(self, img: Image.Image) -> np.ndarray:

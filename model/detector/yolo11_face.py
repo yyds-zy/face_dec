@@ -1,16 +1,17 @@
 from ultralytics import YOLO
 
 class YOLOFace:
-    def __init__(self, weight_path='weights/detector/model_11n.pt', device='cuda'):
+    def __init__(self, args, weight_path='weights/detector/model_11n.pt'):
         # 加载训练模型
-        self.model = YOLO(weight_path) # 加载yaml配置文件的同时，加载权重进行训练
+        self.model = YOLO(weight_path)
+        self.conf=args.conf_thres
 
-    def predict(self, image, conf=0.25):
+    def predict(self, image):
         """
         image: 可为图像路径、PIL图像、NumPy数组或 OpenCV 图像。
         conf: 置信度阈值。
         """
-        results = self.model.predict(image, save=False, imgsz=640, conf=0.5)
+        results = self.model.predict(image, save=False, imgsz=640, conf=self.conf, verbose=False)
         return results
 
 # 示例使用

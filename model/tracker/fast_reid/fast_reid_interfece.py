@@ -51,29 +51,42 @@ def preprocess(image, input_size):
 
 
 class FastReIDInterface:
-    def __init__(self, config_file, weights_path, device, batch_size=8, model_name=None):
+    def __init__(self, args, batch_size=8, model_name=None):
         super(FastReIDInterface, self).__init__()
-        if device != 'cpu':
+        if args.device != 'cpu':
             self.device = 'cuda'
         else:
             self.device = 'cpu'
 
         self.batch_size = batch_size
 
-        self.cfg = setup_cfg(config_file, ['MODEL.WEIGHTS', weights_path])
+        self.args = args
 
         from model.build import build_face_ReID
-        self.model_name = 'vit_8_112' if model_name is None else model_name
-        self.model = build_face_ReID('vit_8_112') if model_name is None else build_face_ReID(model_name)
 
-        self.pH, self.pW = self.cfg.INPUT.SIZE_TEST
+        self.model_name = model_name if model_name is not None else 'FaceEmbedderFacenet'
+        self.model = build_face_ReID(self.model_name, args)
+        self.out_dim = self.model.out_dim
 
-    def inference(self, image, detections):
+        # 需要根据模型名称修改对应的读取方式
+        if self.model_name == 'FaceEmbedderFR' or self.model_name == 'FaceEmbedderFacenet':
+            self.reid_input = 'prior_boxes'
+        elif self.model_name == 'FaceEmbedderInsightFace':
+            self.reid_input = 'ori_image'
+        else:
+            self.reid_input = 'prior_patch'
+
+    def inference(self, image=None, **kwargs):
+        if 'detections' in kwargs:
+            detections = kwargs['detections']
+        else:
+            assert self.reid_input=='ori_image'
+            detections = [1]
 
         if detections is None or np.size(detections) == 0:
             return []
 
-        if self.model_name == 'faceReID_FR' or self.model_name == 'faceReID_OF':
+        if self.reid_input=='prior_boxes':
             H, W, _ = image.shape
             face_locations = []
             for d in range(detections.shape[0]):
@@ -92,6 +105,12 @@ class FastReIDInterface:
             features = self.model.extract_with_locations(img_pil, face_locations)
 
             return features
+        
+        if self.reid_input=='ori_image':
+            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            features, detections = self.model.extract(img_pil)
+
+            return features, detections
 
         H, W, _ = np.shape(image)
 
@@ -109,7 +128,8 @@ class FastReIDInterface:
             patch = patch[:, :, ::-1]
 
             # Apply pre-processing to image.
-            patch = cv2.resize(patch, tuple(self.cfg.INPUT.SIZE_TEST[::-1]), interpolation=cv2.INTER_LINEAR)
+            if self.model.input_resize_size:
+                patch = cv2.resize(patch, self.model.input_resize_size, interpolation=cv2.INTER_LINEAR)
             # patch, scale = preprocess(patch, self.cfg.INPUT.SIZE_TEST[::-1])
 
             # plt.figure()
@@ -131,7 +151,7 @@ class FastReIDInterface:
             patches = torch.stack(patches, dim=0)
             batch_patches.append(patches)
 
-        features = np.zeros((0, 512))
+        features = np.zeros((0, self.out_dim))
         # features = np.zeros((0, 2048))
         # features = np.zeros((0, 768))
 

@@ -1,11 +1,12 @@
 from ultralytics import YOLO
 
 class YOLOPose:
-    def __init__(self, weight_path='weights/pose/yolov8n-pose.pt', device='cuda'):
+    def __init__(self, args, weight_path='weights/pose/yolov8n-pose.pt', device='cuda'):
         # 加载姿态关键点检测模型
         self.model = YOLO(weight_path)
         self.device = device
         self.model.to(device)
+        self.conf = args.conf_thres
 
     def predict(self, image, conf=0.25):
         """
