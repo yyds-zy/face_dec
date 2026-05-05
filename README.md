@@ -40,6 +40,11 @@ pip install cmake
 pip install dlib
 pip install face_recognition 
 conda install -c conda-forge libstdcxx-ng
+
+# for facial attribution det
+pip install onnxruntime-gpu
+pip install scikit-image
+pip install transformers
 ```
 
 <!-- for face tracking -->
@@ -50,6 +55,10 @@ cd <UNIONPROJECT_dir>
 # For yolo11s infer tracker face【ReID model：faceReID_FR / vit_8_112】(可选择添加 --with_pose)
 python main.py --weights weights/detector/model_11n.pt --source test/MOT17-08.mp4 --agnostic-nms --view-img --classes 0 --conf-thres 0.5 --img-size 640 --track_buffer 150 --track_high_thresh 0.7 --min_box_area 400 --proximity_thresh 0.95 --with-reid --view_img
 ```
+
+<!-- 预训练模型权重保存位置 -->
+model/face_attribution/attr_race_gender.py: weights/attribution_DeepFace/gender_model.onnx 和 weights/attribution_DeepFace/race_model.onnx
+model/face_attribution/appearence.py: weights/SwinFace/checkpoint_step_79999_gpu_0.pt
 
 <!-- for face detection -->
 
